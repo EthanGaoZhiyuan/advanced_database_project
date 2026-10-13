@@ -1,0 +1,5 @@
+psycopg[binary]==3.2.9
+pandas==2.2.3
+numpy==1.26.4
+streamlit==1.45.1
+

@@ -1,0 +1,73 @@
+# Tutorial layout: one Python workspace and the four workshop services.
+# A new project name keeps earlier boa-warehouse database volumes separate.
+name: boa-tutorial
+
+services:
+  python:
+    build: ./python
+    working_dir: /workspace
+    volumes:
+      - ./workspace:/workspace
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: boa
+      PGUSER: student
+      PGPASSWORD: student
+      NEO4J_URL: http://neo4j:7474
+      NEO4J_AUTH: neo4j/password
+    ports:
+      - "127.0.0.1:8501:8501"
+    stdin_open: true
+    tty: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:15-bookworm
+    environment:
+      POSTGRES_DB: boa
+      POSTGRES_USER: student
+      POSTGRES_PASSWORD: student
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U student -d boa"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/password
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - neo4j_data:/data
+
+  cloudbeaver:
+    image: dbeaver/cloudbeaver:25.3.2
+    ports:
+      - "127.0.0.1:8978:8978"
+    volumes:
+      - cloudbeaver_data:/opt/cloudbeaver/workspace
+
+  # Included to match the tutorial environment; the BoA ETL does not use ClickHouse.
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  cloudbeaver_data:
+  clickhouse_data:

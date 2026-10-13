@@ -1,0 +1,13 @@
+{
+  "accounts": 900,
+  "snapshots": 78958,
+  "customer_dates": 45000,
+  "transactions": 93071,
+  "files": {
+    "expected_accounts.jsonl": "dc052ab3ab29d09b3618d3d92bdc4fdd72cf2e27cc3a1224fc50e29fca31653e",
+    "expected_balances.jsonl": "ccb6dae436baed48fb180e308e370edc514cd8c053b54462b2be162f68e1ba3b",
+    "expected_customers.jsonl": "47db9ce6fbe3daf96370a87bcd69a2d121b72e6bb7b3d48d77f7ed73d110c922",
+    "expected_profiles.jsonl": "e5d68d45811b2a253fcfb27557aa3246b43d79c346a836f5743d499b62abcac1",
+    "expected_transactions.jsonl": "9f0d0cd2f56254228a7a128de55c25d05a798bb8dec66ced1318647f7d15276f"
+  }
+}

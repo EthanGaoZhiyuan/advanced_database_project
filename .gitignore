@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/docs/
+/sql/
+workspace/output/*
+!workspace/output/.gitkeep
+
