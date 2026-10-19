@@ -2,7 +2,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-/docs/
+/docs/*
+!/docs/manual-demo.md
 /sql/
 workspace/output/*
 !workspace/output/.gitkeep

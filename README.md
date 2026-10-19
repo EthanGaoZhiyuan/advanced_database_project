@@ -18,7 +18,8 @@ workspace/
   graph/                    # Cypher queries
   dashboard/                # Streamlit app
   output/                   # Profiles, validation results and exported reports
-docs/                       # Architecture and ERDs
+docs/
+  manual-demo.md            # Step-by-step manual demonstration guide
 ```
 
 ## 1. Start Docker
@@ -65,23 +66,19 @@ Open [the dashboard](http://localhost:8501). Keep this terminal open; use anothe
 
 | Tool | Address | Connection |
 |---|---|---|
-| CloudBeaver | http://localhost:8978 | PostgreSQL host `postgres`, port `5432`, database `boa`, user/password `student` |
+| CloudBeaver | http://localhost:8978 | PostgreSQL host `postgres`, port `5432`, database `boa`, username `student`, password `student` |
 | Neo4j Browser | http://localhost:7474 | `bolt://localhost:7687`, user `neo4j`, password `password` |
-| PostgreSQL from the host | `localhost:55432` | Database `boa`, user/password `student` |
+| PostgreSQL from the host | `localhost:55432` | Database `boa`, username `student`, password `student` |
 
 CloudBeaver's initial administrator account is separate from the PostgreSQL account. The three source databases are `boa_savings`, `boa_cards` and `boa_loans`. These credentials are for this local fictional tutorial dataset.
 
 For a step-by-step CloudBeaver demonstration, see the [Manual demo guide](docs/manual-demo.md) (Chinese).
 
-To replace the report's 22 original screenshots, follow the [Report screenshot guide](docs/report-screenshot-guide.md) (Chinese), with queries, expected results and English captions for each figure.
+For manual warehouse setup, use PostgreSQL username **`student`** and password **`student`** for all four database connections, matching the tutorial Docker configuration and the existing `001_schema.sql`. First create the source tables with the matching files in `workspace/sql/sources/`, then connect the SQL editor to `boa` and execute all of `workspace/sql/001_schema.sql`.
 
-For manual warehouse setup, first create the source tables with the matching files in `workspace/sql/sources/`. Connect the SQL editor to `boa`, set the actual **PostgreSQL** login password below, then execute all of `workspace/sql/001_schema.sql` in the same editor:
+The file sets `boa.source_user` to the current PostgreSQL login (`session_user`, which is `student` with the connection above) and sets `boa.source_password` to `student`. These statements overwrite earlier values for those two session settings, so no separate password-setting command is needed for this default environment.
 
-```sql
-SET boa.source_password = 'your actual PostgreSQL login password';
-```
-
-The SQL uses the current database login and the three source database names above on `127.0.0.1:5432` inside PostgreSQL. Existing `boa.source_user`, `boa.source_host`, `boa.savings_db`, `boa.cards_db` and `boa.loans_db` session settings override these defaults. If you previously set an incorrect account, correct `boa.source_user` or use a fresh connection. Missing passwords, missing local login roles and missing local source databases produce explicit errors. Continue with `002_reports.sql`, `003_integrity.sql` and `004_input_contract.sql`. Step 02 supplies connection settings automatically when using Python.
+Source connections use the three source database names above on `127.0.0.1:5432` inside PostgreSQL. Existing `boa.source_host`, `boa.savings_db`, `boa.cards_db` and `boa.loans_db` session settings override those defaults. Continue with `002_reports.sql`, `003_integrity.sql` and `004_input_contract.sql`. When using Python, step 02 runs these files automatically.
 
 Warehouse DDL supports a fresh database or rerunning the current schema; it no longer migrates older table layouts. If a source database's `public` schema was deleted, recreate it in that source database before its source DDL. Sample data is loaded separately.
 
@@ -98,5 +95,3 @@ From the host project directory, stop the services while retaining database volu
 ```bash
 docker compose down
 ```
-
-See [Architecture](docs/architecture.md) for the implemented models and business rules, and [Refactor notes](docs/refactor-notes.md) for the changes and verification limits.
