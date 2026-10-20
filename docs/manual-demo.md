@@ -1,41 +1,45 @@
-# BoA 手动演示操作指南
+# BoA Prototype: Tutor Run and Demonstration Guide
 
-适用环境：当前项目的 `boa-tutorial` Docker 环境和新版 SQL。
+This guide runs the current `boa-tutorial` Docker environment and demonstrates how three banking systems feed an integrated warehouse, reports and a relationship graph.
 
-本指南通过 CloudBeaver 完成三个源数据库、数据仓库和 ETL 的手动演示。文中的 SQL 文件路径均相对于项目的 `workspace/sql/`；终端命令在项目根目录执行。
+```text
+Savings / Cards / Loans -> Bronze -> Silver -> Data Vault -> Gold
+                                                            |
+                                              Reports, Dashboard and Neo4j
+```
 
-如果服务还没有启动，先在终端执行：
+Choose **one** route for loading the warehouse:
+
+- **Python route:** follow sections 1 and 2, then continue with section 4. Run each script yourself and inspect the results between steps.
+- **Manual SQL route:** follow sections 1 and 3, then continue with section 4. Execute the SQL files in CloudBeaver.
+
+Both routes use the same SQL transformations. Sections 4-7 cover validation, business queries, Neo4j and the Dashboard. Do not run the two ETL routes concurrently.
+
+**Command locations:** run every `bash` command below in a host terminal at the project root, beside `docker-compose.yml`. These commands already enter the Python container; do not first open a container shell. Run `sql` blocks in CloudBeaver and `cypher` blocks in Neo4j Browser. SQL file names in the manual route are relative to `workspace/sql/`.
+
+## 1. Start the environment
+
+With Docker running, execute:
 
 ```bash
 docker compose up -d --build
 docker compose ps
 ```
 
-打开 [CloudBeaver](http://localhost:8978)。在 Ubuntu 虚拟机中启动 Docker 时，也在该虚拟机的浏览器中打开这个地址。
+Wait for PostgreSQL to be healthy and the other services to start. If using the Ubuntu virtual machine, run these commands and open the browser inside that virtual machine.
 
-## 1. 怎样执行一个 SQL 文件
+| Service | Browser address or endpoint | Purpose |
+|---|---|---|
+| CloudBeaver | [http://localhost:8978](http://localhost:8978) | Execute SQL and inspect PostgreSQL tables |
+| Neo4j Browser | [http://localhost:7474/browser/](http://localhost:7474/browser/) | Query and display the relationship graph |
+| Dashboard | [http://localhost:8501](http://localhost:8501) | View reports after starting Streamlit in section 7 |
+| PostgreSQL from the host | `localhost:55432` | Optional connection from a desktop database client |
 
-1. 用文本编辑器打开项目中的 `.sql` 文件。
-2. 在 CloudBeaver 中打开连接到目标数据库的 SQL 编辑器。
-3. 用文件的**完整内容替换编辑器中的旧 SQL**，清除文字选区。
-4. 点击 **Execute SQL script（执行脚本）**，执行文件中的全部语句。
-5. 确认没有报错，再执行下一个文件。
+ClickHouse is included to match the tutorial environment, but it is not used by the BoA ETL.
 
-不要只输入文件名，也不要只执行光标所在的一条语句。文件中的 `DO $$ ... $$` 必须保持完整。参考 [CloudBeaver SQL 编辑器说明](https://dbeaver.com/docs/cloudbeaver/SQL-Editor/)。
+For CloudBeaver, complete its initial administrator setup if prompted, then create a PostgreSQL connection:
 
-**左侧树选中某个数据库，不代表当前 SQL 编辑器已经切换过去。** 检查顶部的数据库选择，例如 `public@boa_loans`，并在执行每个源系统脚本前单独运行：
-
-```sql
-SELECT current_database();
-```
-
-以查询返回的数据库名为准。三套源系统使用相同的表名，但字段不同，必须分别在各自的数据库中执行。
-
-## 2. 连接仓库，创建三个源数据库
-
-当前 Docker 环境的 PostgreSQL 连接配置：
-
-| 配置项 | 值 |
+| Setting | Value |
 |---|---|
 | Host | `postgres` |
 | Port | `5432` |
@@ -43,9 +47,71 @@ SELECT current_database();
 | Username | `student` |
 | Password | `student` |
 
-这是 CloudBeaver 容器访问 PostgreSQL 的地址。CloudBeaver 的网页登录账号与 PostgreSQL 数据库账号是两套账号。
+CloudBeaver runs inside Docker, so it uses `postgres:5432`, not the host port `55432`. Its web administrator account is separate from the PostgreSQL login.
 
-`boa` 已由 Docker 初始化。先查询已有数据库：
+Use these PostgreSQL credentials for all four databases. They match the Compose configuration and the existing `001_schema.sql`, which sets the source user to the current login and the source password to `student`. Changing Compose settings alone does not reset credentials in an existing database volume.
+
+## 2. Python route: run the numbered scripts
+
+Run these commands **one at a time**, in this order. Check that each command finishes without an error before continuing.
+
+```bash
+docker compose exec python python boa_etl/01_check_environment.py
+docker compose exec python python boa_etl/02_create_schemas.py
+docker compose exec python python load_sample_data.py
+docker compose exec python python boa_etl/03_profile_sources.py
+docker compose exec python python boa_etl/04_load_bronze.py
+docker compose exec python python boa_etl/05_build_silver_etl.py
+docker compose exec python python boa_etl/06_build_gold_etl.py
+```
+
+| Step | What the script does | What to inspect |
+|---|---|---|
+| `01_check_environment.py` | Checks PostgreSQL, Neo4j, CloudBeaver, ClickHouse and the supplied dataset | Successful checks in the terminal; retry if a service is still starting |
+| `02_create_schemas.py` | Creates missing source databases, runs their source DDL, then runs warehouse SQL files `001`-`004` | Three source databases with four tables each; warehouse schemas in `boa` |
+| `load_sample_data.py` | Executes the three source INSERT scripts and the warehouse registry script | Savings: 286 customer rows; Cards: 286; Loans: 285 |
+| `03_profile_sources.py` | Examines source counts, columns, missing values, formatting and overlapping local IDs | `workspace/output/source_profile.json` |
+| `04_load_bronze.py` | Starts a run and extracts source records into Bronze with provenance | Audit stage `bronze-ready` |
+| `05_build_silver_etl.py` | Cleans and integrates Silver, then loads Data Vault history | Audit stage `silver-vault-ready`; populated Silver and Vault tables |
+| `06_build_gold_etl.py` | Loads Gold dimensions and facts, checks publication completeness and finishes the run | Audit status `SUCCEEDED` and stage `build-gold` |
+
+Step 05 executes **both** `build_silver.sql` and `load_vault.sql`. Step 06 executes **both** `build_gold.sql` and `finish_run.sql`. There is no separate numbered Python step for Vault or publication.
+
+The scripts restore the batch and run context from PostgreSQL. You do not need to set `boa.batch_id`, `boa.run_id` or `boa.dates` manually for this route. Steps 04-06 share a run ID and commit their completed layers separately; Gold data and its publication status commit together in step 06.
+
+After step 06 succeeds, go directly to **section 4** for Python steps 07-09. Do not repeat the manual SQL route.
+
+### Rerunning or recovering the Python route
+
+For an ordinary rerun with unchanged source data, run **04, 05, 06, 07, 08 and 09** again. There is no need to rerun schema creation or sample loading. An unchanged rerun should not duplicate business records or Vault versions.
+
+If a command fails, stop and fix the first reported error. For an ETL failure, restart from **04**, then continue with 05 and 06. Step 04 marks an unfinished attempt as failed and starts a new run. Earlier committed layers can remain after a failure; rerunning only 06 is not the recovery sequence.
+
+## 3. Manual SQL route: load the warehouse in CloudBeaver
+
+Skip this section if you used the Python route. It is the alternative way to demonstrate the same warehouse transformations.
+
+### 3.1 Execute a complete SQL file
+
+1. Open the file from `workspace/sql/` in a text editor.
+2. Open a CloudBeaver SQL editor connected to the database specified below.
+3. Replace the old editor contents with the **entire file**, then clear any text selection.
+4. Choose **Execute SQL script**, so all statements run. Do not execute only the statement at the cursor.
+5. Wait for completion and check for errors before proceeding.
+
+Keep each `DO $$ ... $$` block intact. A file name typed into the SQL editor does not execute that file.
+
+**Selecting a database in the navigation tree does not necessarily change an existing SQL editor's connection.** Before running a source script, confirm the editor's database with:
+
+```sql
+SELECT current_database();
+```
+
+The three source systems use the same table names but different columns. Execute each script in its matching database.
+
+### 3.2 Create the source databases
+
+Docker initializes `boa`. In an editor connected to `boa`, check which databases already exist:
 
 ```sql
 SELECT datname
@@ -54,7 +120,7 @@ WHERE datname IN ('boa', 'boa_savings', 'boa_cards', 'boa_loans')
 ORDER BY datname;
 ```
 
-只创建缺少的源数据库。以下语句在 **Auto-commit 模式下逐条执行**，不要放进 `BEGIN`：
+Create **only the missing databases**. Execute each statement separately with Auto-commit enabled and no open transaction:
 
 ```sql
 CREATE DATABASE boa_savings;
@@ -68,29 +134,27 @@ CREATE DATABASE boa_cards;
 CREATE DATABASE boa_loans;
 ```
 
-PostgreSQL 的 `CREATE DATABASE` 不支持 `IF NOT EXISTS`，也不能在事务中执行。参考 [PostgreSQL CREATE DATABASE 文档](https://www.postgresql.org/docs/15/sql-createdatabase.html)。
+PostgreSQL does not support `CREATE DATABASE IF NOT EXISTS`, and database creation cannot run inside `BEGIN` / `COMMIT`.
 
-可以为四个数据库分别建立并命名连接，其他参数保持相同，仅修改 Database；也可以使用一个显示所有数据库的连接，通过编辑器顶部切换数据库。每次切换后都用 `SELECT current_database();` 确认。
+For the clearest demonstration, create four named CloudBeaver connections, one per database. Use the settings in section 1 and change only Database. Alternatively, enable **Show all databases**, refresh the connection and switch databases in the SQL editor; verify each switch with `SELECT current_database();`.
 
-如果数据库已经创建却没有显示在左侧，检查连接中的 **Show all databases** 设置，然后刷新或重新连接。
+### 3.3 Create the source tables, then the warehouse
 
-## 3. 创建源系统的表
+Execute the following complete files:
 
-按下面的数据库与文件对应关系执行完整脚本：
-
-| 顺序 | 编辑器连接的数据库 | 执行文件 |
+| Order | Editor database | SQL file |
 |---|---|---|
 | 1 | `boa_savings` | `sources/savings.sql` |
 | 2 | `boa_cards` | `sources/cards.sql` |
 | 3 | `boa_loans` | `sources/loans.sql` |
 
-如果此前删除了某个源数据库的 `public`，先在那个数据库执行：
+If a source database's `public` schema was previously deleted, first recreate it **in that source database**:
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS public;
 ```
 
-完成每个源数据库的建表后，在同一个编辑器执行检查：
+After running each source DDL file, check the four tables in the same editor:
 
 ```sql
 SELECT
@@ -101,143 +165,87 @@ SELECT
     to_regclass('public.transactions') AS transactions_table;
 ```
 
-数据库名应与当前业务一致，四个表的结果都应有值。`NULL` 表示没有找到对应的表；此时先完成建表，不要继续导入数据。
+All four table results should be non-null. A `NULL` means the table has not been found in that database; finish creating the tables before loading data.
 
-三套系统的交易表结构有所不同：
-
-| 数据库 | 交易编号字段 | 交易日期字段 |
+| Source database | Transaction ID column | Transaction date column |
 |---|---|---|
 | `boa_savings` | `txn_id` | `txn_timestamp` |
 | `boa_cards` | `auth_id` | `posted_date` |
 | `boa_loans` | `event_id` | `event_date` |
 
-`CREATE TABLE IF NOT EXISTS` 只会跳过已存在的表，不会修改旧表字段。如果报日期字段不存在，先核对当前数据库和实际表结构。之前用于保留旧表的 `ALTER SCHEMA ... RENAME ...` 是一次性修复操作，不属于正常演示流程。
+`CREATE TABLE IF NOT EXISTS` skips existing tables; it does not repair an incompatible old layout. Do not run another source's DDL in the same database to resolve a missing-column error.
 
-## 4. 创建仓库结构
+Next, open an editor connected to **`boa`** and execute these complete files in order:
 
-打开连接 **`boa`** 的编辑器，确认数据库后执行：
-
-```sql
-SELECT current_database();
-SELECT set_config('boa.source_user', session_user, false);
-SET boa.source_password = 'student';
-```
-
-这里的密码适用于当前 Docker 默认环境。当前 `001_schema.sql` 中也包含 `student` 密码设置；如果实际 PostgreSQL 密码不同，需要同步修改执行内容中的该设置，避免覆盖前面填写的密码。
-
-然后在**同一个编辑器**中依次执行这些文件的完整内容：
-
-| 顺序 | 执行文件 | 作用 |
+| Order | SQL file | Purpose |
 |---|---|---|
-| 1 | `001_schema.sql` | 配置三个源数据库的外部表，创建仓库 schema、表和约束 |
-| 2 | `002_reports.sql` | 创建 Gold 报表视图 |
-| 3 | `003_integrity.sql` | 创建数据完整性检查函数和触发器 |
-| 4 | `004_input_contract.sql` | 创建日期、金额、交易转换及输入检查函数 |
+| 1 | `001_schema.sql` | Creates source foreign tables, warehouse tables, constraints and reference dimension rows |
+| 2 | `002_reports.sql` | Creates reporting views |
+| 3 | `003_integrity.sql` | Creates integrity checks and triggers |
+| 4 | `004_input_contract.sql` | Creates input validation and normalization functions |
 
-完成后刷新数据库列表，可以看到 `boa_src_savings`、`boa_src_cards`、`boa_src_loans`、`boa_bronze`、`boa_silver`、`boa_vault`、`boa_gold` 和 `boa_audit` 等 schema。
+Use the `student` / `student` login from section 1. `001_schema.sql` already contains the source credential settings; no separate password command is needed for this environment. Execute the **whole file**, including the reference rows for product and transaction-type dimensions near its end.
 
-`002_reports.sql` 此时只是创建报表视图，还没有分析结果。若源表是在此前运行 `001_schema.sql` 之后才修正的，需要重新完整执行 `001_schema.sql`，刷新外部表定义。
+Refresh `boa` to see `boa_src_savings`, `boa_src_cards`, `boa_src_loans`, `boa_bronze`, `boa_silver`, `boa_vault`, `boa_gold` and `boa_audit`. The source schemas contain foreign tables pointing to the three separate source databases. Reporting views exist at this stage but have no published results yet.
 
-## 5. 导入测试数据
+If you corrected source table definitions after running `001_schema.sql`, rerun that complete file to refresh its foreign-table definitions.
 
-| 顺序 | 编辑器连接的数据库 | 执行文件 |
+### 3.4 Load the sample records
+
+Execute these files in their respective databases:
+
+| Order | Editor database | SQL file |
 |---|---|---|
 | 1 | `boa_savings` | `seed/savings.sql` |
 | 2 | `boa_cards` | `seed/cards.sql` |
 | 3 | `boa_loans` | `seed/loans.sql` |
 | 4 | `boa` | `seed/registry.sql` |
 
-这些文件已经包含自己的 `BEGIN` 和 `COMMIT`，直接执行完整内容，不要再包一层事务。测试数据文件较大，等待执行完成后再继续。
+The seed files include their own `BEGIN` and `COMMIT`; do not wrap them in an additional transaction. They are large, so wait for each to finish. Files under `sources/` create tables; files under `seed/` insert data.
 
-前三份加载业务数据，最后一份加载客户跨系统映射和批次信息。`sources/loans.sql` 是建表文件，`seed/loans.sql` 是数据文件，其他两个业务同理。
-
-**从 `seed/registry.sql` 开始，后续仓库操作都使用同一个 `boa` 编辑器，不要断开连接或切换到其他数据库。** 批次信息会保存在当前数据库会话中。
-
-导入 registry 后确认批次变量已经设置：
+The registry loads the verified cross-system customer mapping and batch metadata. **From `seed/registry.sql` until the final ETL commit, keep the same `boa` editor and database session.** The registry also sets the session's batch ID. Check it with:
 
 ```sql
 SELECT current_database(), current_setting('boa.batch_id');
 ```
 
-## 6. 准备本次 ETL 的运行记录
+### 3.5 Prepare and execute the ETL
 
-在同一个 `boa` 编辑器执行：
+With Auto-commit enabled and no open transaction, execute the complete **`000_manual.sql`** file in that same `boa` editor.
 
-```sql
--- 新建本次运行编号
-SELECT set_config('boa.run_id', gen_random_uuid()::text, false);
+Despite its name, this file belongs **here, after schema creation and registry loading**. It sets the source credentials, creates a run ID, obtains the batch dates, records `/workspace/data` as the input directory, inserts the `RUNNING` audit record, and starts the ETL transaction with an advisory lock.
 
--- 从刚导入的批次信息中取得处理日期
-SELECT set_config(
-    'boa.dates',
-    (
-        SELECT array_agg(d.value::date ORDER BY d.value::date)::text
-        FROM boa_audit.batch_manifest b
-        CROSS JOIN LATERAL
-            jsonb_array_elements_text(b.manifest->'dates') AS d(value)
-        WHERE b.batch_id = current_setting('boa.batch_id')
-    ),
-    false
-);
+The file already ends with `BEGIN` and `pg_advisory_xact_lock(32113001)`. Do not create a second run record or issue another `BEGIN`.
 
--- 修正样例文件目录记录
-UPDATE boa_audit.batch_manifest
-SET input_directory = '/workspace/data'
-WHERE batch_id = current_setting('boa.batch_id');
+Now execute these complete files in the same editor and transaction:
 
--- 记录本次 ETL 开始
-INSERT INTO boa_audit.pipeline_run
-    (run_id, batch_id, status, current_stage)
-VALUES (
-    current_setting('boa.run_id')::uuid,
-    current_setting('boa.batch_id'),
-    'RUNNING',
-    'ingest-bronze'
-);
-```
-
-这部分平时由 Python 完成，手动演示时需要自己执行。此时保持 Auto-commit，让开始记录先保存，再进入下一步的 ETL 事务。
-
-## 7. 依次执行 ETL
-
-先执行：
-
-```sql
-BEGIN;
-SELECT pg_advisory_xact_lock(32113001);
-```
-
-现有 `000_manual.sql` 已包含第 6 步的运行准备和上面的事务开始代码。如果已在第 5 步后完整执行该文件，就直接从下面的 `extract_bronze.sql` 开始，不要重复创建运行记录或再次执行 `BEGIN`。
-
-在同一个 `boa` 编辑器中，按顺序执行以下文件的完整内容：
-
-| 顺序 | 文件 | 展示的功能 |
+| Order | SQL file | Purpose |
 |---|---|---|
-| 1 | `extract_bronze.sql` | 从三个源数据库抽取原始数据，记录来源和批次 |
-| 2 | `build_silver.sql` | 清洗字段、统一客户、整合账户及交易 |
-| 3 | `load_vault.sql` | 写入 Hub、Link、Satellite，保存历史 |
-| 4 | `build_gold.sql` | 加载维度表和事实表 |
-| 5 | `finish_run.sql` | 检查发布完整性，标记运行成功 |
+| 1 | `extract_bronze.sql` | Extract original source records with provenance |
+| 2 | `build_silver.sql` | Normalize fields and integrate customers, accounts, balances and transactions |
+| 3 | `load_vault.sql` | Load Hubs, the customer-account Link and Satellite history |
+| 4 | `build_gold.sql` | Load dimensions, daily snapshot facts and transaction facts |
+| 5 | `finish_run.sql` | Check publication completeness and mark the run successful |
 
-**中间不要提交事务，不要切换编辑器或连接，也不要同时运行 Python ETL。** 文件里的临时表需要在同一个事务中继续使用。
+**Do not commit between these files, change sessions, or run Python ETL concurrently.** Temporary tables are needed across the SQL files. Do not enable an execution option that commits after every file.
 
-全部成功后执行：
+After all five files succeed, execute:
 
 ```sql
 COMMIT;
 ```
 
-这个手动流程将整个 ETL 放在一个事务里；Python 流程则按层分别提交。`finish_run.sql` 本身不会执行 `COMMIT`。
+`finish_run.sql` does not commit by itself. This manual route uses one transaction for the ETL; the Python route commits its layers separately. Both require a successful final publication before reports display the new results.
 
-### 某一步报错后的处理
+### 3.6 Recover from a manual SQL error
 
-立即停止执行后续文件。在发生错误的同一个编辑器中，先**单独执行**：
+Stop at the first error. In the same editor, execute this statement **on its own**:
 
 ```sql
 ROLLBACK;
 ```
 
-然后记录失败：
+Then record the failed attempt:
 
 ```sql
 UPDATE boa_audit.pipeline_run
@@ -248,145 +256,237 @@ WHERE run_id = current_setting('boa.run_id')::uuid
   AND status = 'RUNNING';
 ```
 
-解决第一条错误后，从第 6 步创建新的运行记录，再从 Bronze 开始执行第 7 步。事务回滚后临时表也会消失，不能从中间某个文件直接继续。
+Fix the original error, then repeat section 3.5, starting with `000_manual.sql` to create a new run. Do not resume from the middle of the ETL: rollback removes the temporary tables.
 
-## 8. 查询结果，完成业务演示
+If the connection was lost, the session variables are also lost. Identify the abandoned run in `boa_audit.pipeline_run` and mark that specific run failed before starting again. Restore the batch context by rerunning `seed/registry.sql`, then follow section 3.5.
 
-先检查本次运行是否成功：
+## 4. Validate, export reports and build the graph
 
-```sql
-SELECT run_id, status, records_read, records_written
-FROM boa_audit.pipeline_run
-ORDER BY started_at DESC;
-```
+Complete either route through successful Gold publication before running these commands. They work after both the Python route and the manual SQL route.
 
-本次运行应为 `SUCCEEDED`。再展示三类业务分析：
-
-```sql
--- ① 同一个客户在储蓄、信用卡、贷款业务中的统一视图
-SELECT *
-FROM boa_gold.v_customer_360
-WHERE enterprise_customer_id = 'EC000001'
-  AND business_date = DATE '2026-03-31';
-
--- ② 客户持有的产品组合
-SELECT *
-FROM boa_gold.v_product_combinations
-WHERE business_date = DATE '2026-03-31'
-ORDER BY customer_count DESC;
-
--- ③ 每日信用卡和贷款负债趋势
-SELECT *
-FROM boa_gold.v_borrowing_daily
-ORDER BY business_date;
-```
-
-这些报表只展示已成功发布的数据，因此必须完成 `finish_run.sql` 和最终的 `COMMIT`。
-
-## 9. 校验 ETL 结果
-
-第 7 步已经完成 `finish_run.sql` 和 `COMMIT`，第 8 步能查到成功发布的数据后，再继续下面的操作。
-
-**本指南后续所有 `bash` 命令都在 Ubuntu 的项目根目录终端执行，不在 CloudBeaver 或 Neo4j 的查询编辑器中执行。** 命令会自动进入 Python 容器运行脚本，不需要先执行 `docker compose exec python bash`。
-
-运行独立仓库校验：
+### 4.1 Validate the warehouse: Python step 07
 
 ```bash
 docker compose exec python python boa_etl/07_validate_warehouse.py
 ```
 
-脚本检查客户身份、账户关联、余额、交易和数据来源，并与独立的预期结果比较。终端最后应显示：
+The current validator contains 32 checks. It compares expected identities, account ownership, financial values, customer profiles and report totals with independent expected datasets, and checks business rules, publication and lineage. Matching row counts alone is insufficient. This is not a comparison of every historical field in every warehouse layer.
+
+Look for:
 
 ```text
 Warehouse validation: PASSED; details in /workspace/output
 ```
 
-在宿主机项目的 `workspace/output/` 中查看：
+Review these files on the host:
 
-| 文件 | 内容 |
+| File under `workspace/output/` | Contents |
 |---|---|
-| `validation.txt` | 便于阅读的检查结果 |
-| `validation.json` | 详细校验结果 |
-| `explain_analyze.json` | 查询执行计划和本次测得的耗时 |
+| `validation.txt` | Readable check results |
+| `validation.json` | Detailed checks, counts and mismatches |
+| `explain_analyze.json` | Query plans and execution times measured during this run |
 
-如果结果为 `FAILED`，先查看失败项并修正，再继续展示。SQL 成功执行和独立数据校验通过需要分别确认。
+If validation fails, inspect the failed checks before presenting the results as correct. A successful ETL run and successful independent validation are separate checks.
 
-## 10. 导出分析报表
-
-校验通过后执行：
+### 4.2 Export analytics: Python step 08
 
 ```bash
 docker compose exec python python boa_etl/08_run_analytics.py
 ```
 
-终端会输出各报表的行数和前五条记录。完整结果保存在宿主机项目的 `workspace/output/`：
+The terminal shows row counts and the first five rows of each report. Full exports appear in `workspace/output/`:
 
-| 文件 | 分析内容 |
+| File | Contents |
 |---|---|
-| `customer_360.csv` | 客户统一资料、持有产品和余额 |
-| `product_combinations.csv` | 客户持有的产品组合 |
-| `borrowing_daily.csv` | 每日信用卡和贷款负债 |
-| `transaction_types.csv` | 交易类型统计 |
-| `top_merchants.csv` | 商户消费统计 |
-| `analytics.json` | 本次分析日期和各报表行数 |
+| `customer_360.csv` | Unified customer profiles, holdings and balances |
+| `product_combinations.csv` | Customer counts by product combination |
+| `borrowing_daily.csv` | Daily card and loan balances across published dates |
+| `transaction_types.csv` | Transaction counts and movements for the selected date |
+| `top_merchants.csv` | Merchant purchase totals for the reporting window |
+| `analytics.json` | Analysis date and report row counts |
 
-这一步用于导出分析结果。Dashboard 会直接查询数据库，不依赖这些 CSV 才能显示。
+The script selects the latest published business date. The Dashboard queries the database directly; it does not load these CSV files.
 
-## 11. 构建并校验 Graph Model
-
-在项目根目录终端执行：
+### 4.3 Export and validate Neo4j: Python step 09
 
 ```bash
 docker compose exec python python boa_etl/09_build_graph.py
 ```
 
-脚本读取最新发布的 Gold 数据，写入 Neo4j，然后核对节点、关系及属性。终端应显示导出的业务日期、节点数量，以及：
+This script projects the latest published Gold date into Neo4j and reconciles node and relationship identities, properties, amounts and counts. The current graph validator has **10 checks**: five node groups, four relationship groups and an unexpected relationship-type check.
+
+Look for the export date and node counts, followed by:
 
 ```text
 Graph validation: PASSED
 ```
 
-宿主机项目的 `workspace/output/` 中会生成 `graph_export.json` 和 `graph_validation.json`。
+Evidence is saved in `workspace/output/graph_export.json` and `workspace/output/graph_validation.json`. Rerun step 09 after publishing new Gold data to update the graph.
 
-现有 Graph 包含五类节点：`Customer`、`Account`、`Product`、`Address`、`Merchant`。主要关系是：
+## 5. Inspect the data and demonstrate the business results
 
-```text
-Customer ──HOLDS──────────→ Account
-Account  ──OF_PRODUCT─────→ Product
-Customer ──LIVES_AT───────→ Address
-Account  ──TRANSACTED_AT──→ Merchant
+Run the following queries in a CloudBeaver editor connected to **`boa`**. Sections 5.1 and 5.2 can also be used as checkpoints during the Python demonstration, after source loading and step 05 respectively.
+
+### 5.1 Show the three sources and the customer identity problem
+
+```sql
+SELECT 'Savings' AS source_system, count(*) AS customers
+FROM boa_src_savings.customers
+UNION ALL
+SELECT 'Cards', count(*) FROM boa_src_cards.customers
+UNION ALL
+SELECT 'Loans', count(*) FROM boa_src_loans.customers;
 ```
 
-每次重新发布 Gold 后，需要重新运行这一步，才能让 Neo4j 与新的仓库发布结果一致。
+For the supplied dataset, expect 286, 286 and 285 source customer records: 857 in total. They represent 500 enterprise customers after applying the verified crosswalk.
 
-## 12. 在 Neo4j Browser 查看图模型和实际关系
+Show how Lucas appears under different local IDs and formats:
 
-### 12.1 打开并登录
+```sql
+SELECT 'Savings' AS source_system, customer_id, full_name,
+       date_of_birth_text, state
+FROM boa_src_savings.customers WHERE customer_id = 'C000001'
+UNION ALL
+SELECT 'Cards', customer_id, full_name, date_of_birth_text, state
+FROM boa_src_cards.customers WHERE customer_id = 'C000286'
+UNION ALL
+SELECT 'Loans', customer_id, full_name, date_of_birth_text, state
+FROM boa_src_loans.customers WHERE customer_id = 'C000144';
+```
 
-在 Ubuntu 浏览器打开 [Neo4j Browser](http://localhost:7474/browser/)，填写：
+These records map to enterprise customer `EC000001`. Identity integration uses the supplied verified mapping, rather than inferring that matching names or addresses prove two records are the same person.
 
-| 配置项 | 值 |
+### 5.2 Compare original and cleaned fields
+
+```sql
+SELECT 'Bronze (raw)' AS layer,
+       payload->>'full_name' AS full_name,
+       payload->>'email' AS email,
+       payload->>'phone' AS phone,
+       payload->>'state' AS state,
+       payload->>'country' AS country
+FROM boa_bronze.source_record
+WHERE source_system = 'SAVINGS'
+  AND entity_name = 'customers'
+  AND source_record_key = 'C000001'
+UNION ALL
+SELECT 'Silver (clean)', full_name, email, phone, state, country
+FROM boa_silver.enterprise_customer
+WHERE enterprise_customer_id = 'EC000001';
+```
+
+Explain the retained raw values and normalized customer fields. If changed source versions have been loaded, Bronze may return more than one raw version.
+
+### 5.3 Confirm publication and record counts
+
+```sql
+SELECT run_id, status, current_stage,
+       records_read, records_written, records_rejected
+FROM boa_audit.pipeline_run
+ORDER BY started_at DESC
+LIMIT 5;
+```
+
+The completed run should be `SUCCEEDED`, at stage `build-gold`. For the supplied sample, expect 174,643 input records processed and accepted, with zero rejections. **`records_written` counts accepted input records processed downstream; it is not the number of newly inserted Bronze rows.** Unchanged reruns can reuse existing raw records.
+
+The sample's expected warehouse results are 500 enterprise customers, 900 accounts, 78,958 daily snapshots, 93,071 transactions and 90 published dates, from 1 January to 31 March 2026. Use the validation output to confirm these results for the actual run.
+
+### 5.4 Show three business analyses
+
+```sql
+-- One customer's savings, credit-card and loan position.
+SELECT *
+FROM boa_gold.v_customer_360
+WHERE enterprise_customer_id = 'EC000001'
+  AND business_date = DATE '2026-03-31';
+
+-- Customers grouped by their active product combinations.
+SELECT *
+FROM boa_gold.v_product_combinations
+WHERE business_date = DATE '2026-03-31'
+ORDER BY customer_count DESC;
+
+-- Daily borrowing balances across published dates.
+SELECT *
+FROM boa_gold.v_borrowing_daily
+ORDER BY business_date;
+```
+
+For Lucas on 31 March, the supplied sample shows AUD 10,000 savings, AUD 2,000 card debt and AUD 300,000 loan principal. Total borrowing is AUD 302,000; savings are not subtracted from this measure.
+
+Product combinations count customers, not accounts. `NONE` means no active product category on the selected date; an active account with zero balance still counts as a holding. Borrowing values are daily closing balances, so adding them across dates would double count debt.
+
+Gold stores the three balance measures as non-negative amounts in separate columns. Transaction `signed_amount` represents an increase or decrease in the relevant account balance; it is not a universal customer net-worth sign convention.
+
+## 6. Display the graph in Neo4j Browser
+
+### 6.1 Connect and view the model
+
+Open [Neo4j Browser](http://localhost:7474/browser/) after step 09 succeeds:
+
+| Setting | Value |
 |---|---|
 | Connect URL | `bolt://localhost:7687` |
 | Username | `neo4j` |
 | Password | `password` |
 | Database | `neo4j` |
 
-本项目在 Neo4j Browser 中查询实际图数据。CloudBeaver 的 PostgreSQL 编辑器用于关系数据库 SQL；表的 ERD 和 Neo4j 的节点关系图是不同的展示内容。
-
-### 12.2 查看整体模型结构
-
-在 Neo4j Browser 顶部查询框执行：
+Execute:
 
 ```cypher
 CALL db.schema.visualization();
 ```
 
-在结果区域选择 **Graph**，查看节点类型和关系类型的结构概览。这个结果基于数据库元数据；实际客户关系用下一步的查询展示。参考 [Neo4j Browser 官方说明](https://neo4j.com/docs/browser/legacy/visual-tour/)。
+Select **Graph** in the result. This displays a metadata-based overview of node labels and relationship types. Use the following queries to show actual records.
 
-### 12.3 查看具体客户的账户和产品
+```text
+Customer --HOLDS---------> Account
+Account  --OF_PRODUCT----> Product
+Customer --LIVES_AT------> Address
+Account  --TRANSACTED_AT-> Merchant
+```
 
-在 Neo4j Browser 中分别执行下面两个参数命令：
+CloudBeaver's PostgreSQL editor displays relational tables and SQL results. Use Neo4j Browser for these Cypher queries and interactive node-and-relationship results.
+
+### 6.2 Show Lucas's accounts and products
+
+```cypher
+MATCH path =
+  (c:Customer {namespace: 'boa', enterprise_customer_id: 'EC000001'})
+  -[:HOLDS]->(a:Account {namespace: 'boa'})
+  -[:OF_PRODUCT]->(p:Product {namespace: 'boa'})
+RETURN path;
+```
+
+Select **Graph**. For the supplied sample this returns one customer, three accounts and three products: seven nodes and six relationships. This query does not include the address or merchants.
+
+Click a node to inspect its properties and drag nodes to arrange them. If a Product node displays `TRUE`, its caption is showing a Boolean property. Set the Product caption to `code`. Useful captions for actual data are:
+
+| Label | Caption property |
+|---|---|
+| `Customer` | `name` |
+| `Account` | `source_account_id` |
+| `Product` | `code` |
+| `Address` | `street_address` |
+| `Merchant` | `name` |
+
+### 6.3 Show all five node types in one small example
+
+```cypher
+MATCH p1 = (c:Customer {namespace: 'boa'})
+  -[:HOLDS]->(a:Account {namespace: 'boa'})
+  -[:OF_PRODUCT]->(p:Product {namespace: 'boa'})
+MATCH p2 = (c)-[:LIVES_AT]->(address:Address {namespace: 'boa'})
+MATCH p3 = (a)-[:TRANSACTED_AT]->(merchant:Merchant {namespace: 'boa'})
+RETURN p1, p2, p3
+LIMIT 1;
+```
+
+This selects a customer-account example that has both an address and merchant activity. It demonstrates the five node types and four relationship types with actual data. It is not restricted to Lucas.
+
+### 6.4 Explore shared addresses and merchants
+
+Open `workspace/graph/browser.cypher`. In Neo4j Browser, first execute these parameter commands separately:
 
 ```text
 :param namespace => 'boa'
@@ -396,88 +496,68 @@ CALL db.schema.visualization();
 :param enterprise_customer_id => 'EC000001'
 ```
 
-然后执行：
+Copy and execute one complete query at a time from the file. It contains customer-account-product paths, shared addresses and shared card merchants. Change the customer parameter to explore another customer; a shared-relationship query may legitimately return no rows for a particular customer.
 
-```cypher
-MATCH path=(c:Customer {
-  namespace:$namespace,
-  enterprise_customer_id:$enterprise_customer_id,
-  boa_managed:true
-})
-  -[:HOLDS {namespace:$namespace,boa_managed:true}]->
-  (:Account {namespace:$namespace,boa_managed:true})
-  -[:OF_PRODUCT {namespace:$namespace,boa_managed:true}]->
-  (:Product {namespace:$namespace,boa_managed:true})
-RETURN path LIMIT 30;
-```
+Shared addresses and merchants are relationship clues, not evidence that customers are the same person or that fraud occurred. Address links do not merge customer identities. Merchant relationships summarize qualifying card purchases through the graph export date, rather than only transactions on that day.
 
-切换到 **Graph** 结果视图，即可看到该客户、其账户及产品类型。点击节点或关系可查看属性，拖动节点可以调整布局。
+## 7. Start and demonstrate the Dashboard
 
-### 12.4 查看共同地址和共同商户
-
-打开项目的 `workspace/graph/browser.cypher`，在刚才设置参数的 Neo4j Browser 中，分别复制执行其中后两段完整查询：
-
-| 查询 | 演示内容 |
-|---|---|
-| Shared address | 通过同一个地址连接的不同客户 |
-| Shared card merchants | 通过信用卡消费商户连接的不同客户 |
-
-一次执行一段 `MATCH ... RETURN ...;`，并选择 **Graph** 结果视图。需要换客户时，重新执行 `:param enterprise_customer_id => '客户编号'`，再运行查询。
-
-共同地址和共同商户只表示关联线索，不会据此合并客户身份，也不能据此确认客户之间存在私人关系。
-
-## 13. 启动和演示 Dashboard
-
-### 13.1 启动页面
-
-在 Ubuntu 项目根目录终端执行：
+In a host terminal at the project root, run:
 
 ```bash
 docker compose exec python streamlit run dashboard/app.py --server.address=0.0.0.0 --server.port=8501 --browser.gatherUsageStats=false
 ```
 
-保持这个终端运行，在 Ubuntu 浏览器打开 [Dashboard](http://localhost:8501)。需要执行其他终端命令时，另开一个终端；按 `Ctrl+C` 会停止 Dashboard。
+Keep this terminal running and open [http://localhost:8501](http://localhost:8501). Use another terminal for further commands. Press `Ctrl+C` to stop Streamlit.
 
-### 13.2 按业务场景展示
+Select the published business date **31 March 2026** for the supplied sample, then demonstrate these tabs:
 
-先在左侧 **Published business date** 选择最新发布日期。当前样例完整运行后，最新日期应为 `2026-03-31`。
-
-| 页面 | 建议操作 | 展示的业务能力 |
+| Tab | Action | What it demonstrates |
 |---|---|---|
-| Customer 360 | 选择 `EC000001`，查看统一资料、账户列表及余额趋势 | 把同一客户在三个业务中的信息整合在一起 |
-| Product Holdings | 查看产品持有比例、产品组合和跨产品持有情况 | 分析客户使用了哪些产品及产品之间的重叠 |
-| Borrowing Balances | 查看信用卡欠款、贷款本金和每日趋势 | 汇总客户及全行负债，储蓄不计入负债 |
-| Transaction Activity | 选择客户，查看交易明细、类型及商户消费 | 分析客户的交易活动和消费情况 |
-| Relationships | 选择客户，查看关系图并切换关联分析 | 从 Neo4j 查询账户、地址和商户关系 |
+| Customer 360 | Select Lucas / `EC000001`; inspect his profile, accounts and balance trend | A unified customer view across three source systems |
+| Product Holdings | Inspect category counts, combinations and the customer list | Active product ownership, cross-product overlap and customers with no active products |
+| Borrowing Balances | Inspect the card/loan split, borrower list and daily trend | Total customer borrowing without offsetting savings or adding balances across dates |
+| Transaction Activity | Inspect transaction types, individual transactions and merchant totals | Account movements and spending activity |
+| Relationships | Select a customer and inspect the graph | Customer-account-product links and available address/merchant connections |
 
-可以使用页面中的 CSV 下载按钮导出当前分析结果。
+The first four tabs query Gold. The Relationships tab queries the most recent Neo4j export. Changing the Dashboard date **does not rebuild the graph**. The page warns if its export date or publication run differs from the selected warehouse publication. For an aligned demonstration, use the latest published date and rerun step 09 after a new publication.
 
-前四个页面读取 PostgreSQL Gold；`Relationships` 读取 Neo4j。Graph 默认导出最新发布日期，演示时让 Dashboard 的选择日期与 Graph 日期保持一致。
+Use **Refresh from database** after updating the data. Use the available CSV download buttons to show that report results can be exported.
 
-如果重新执行过 ETL，先确认校验通过，再运行 `09_build_graph.py` 更新 Graph，最后点击 Dashboard 左侧的 **Refresh from database**。
+## 8. Optional full test and shutdown
 
-### 13.3 演示时使用哪个页面
+To run the complete automated acceptance sequence from a running Docker environment:
 
-| 地址 | 用途 |
+```bash
+docker compose exec python python test_pipeline.py
+```
+
+This runs setup, sample loading and steps 01-09, then repeats steps 04-09. It validates both passes and compares table counts to check that an unchanged rerun does not add duplicate records or Vault versions. Results are written to `workspace/output/pipeline_test.json`.
+
+This command loads sample data and creates new ETL runs. Run it separately from a manual demonstration, not while a SQL ETL transaction is open.
+
+To stop the environment while retaining database volumes:
+
+```bash
+docker compose down
+```
+
+Do not add `-v` when you want to retain the demonstration data.
+
+## 9. Common problems
+
+| Symptom | What to check or do |
 |---|---|
-| [CloudBeaver](http://localhost:8978) | 查看源表和仓库各层，执行 SQL，展示 ETL 和报表查询 |
-| [Neo4j Browser](http://localhost:7474/browser/) | 执行 Cypher，查看 Graph Model 结构和具体节点关系 |
-| [Dashboard](http://localhost:8501) | 展示业务分析图表和客户关系分析 |
-
-演示结束后，在运行 Streamlit 的终端按 `Ctrl+C`。如果也需要停止 Docker 服务，在项目根目录执行 `docker compose down`，保留数据库数据卷供下次使用。
-
-## 常见问题速查
-
-| 现象 | 检查与处理 |
-|---|---|
-| 左侧选中了源库，查询仍返回 `boa` | 切换 SQL 编辑器顶部的活动数据库，再执行 `SELECT current_database();` |
-| 四个 `to_regclass` 结果都是 `NULL` | 当前库缺少源表，执行对应 `sources/*.sql` 的完整内容 |
-| `posted_date` 或 `event_date` 不存在 | 核对当前库和已有 `transactions` 的字段；重复运行 `CREATE TABLE IF NOT EXISTS` 不会修正旧结构 |
-| `current transaction is aborted` | 在原编辑器单独执行 `ROLLBACK;`，处理此前第一条错误后再重试 |
-| 找不到 `boa.batch_id`、`boa.run_id` 或 `boa.dates` | 检查是否换了数据库会话、遗漏 registry 导入或运行准备步骤 |
-| Gold 表有数据，报表没有结果 | 检查本次运行是否已完成 `finish_run.sql`、状态为 `SUCCEEDED`，并已 `COMMIT` |
-| Neo4j Browser 无法打开或连接 | 在项目根目录执行 `docker compose ps`，检查 `neo4j` 服务；在运行 Docker 的 Ubuntu 浏览器中访问 `7474`，连接地址使用 `bolt://localhost:7687` |
-| Graph 查询没有节点或关系 | 确认 `09_build_graph.py` 执行成功、选择的是 `neo4j` 数据库，且客户编号存在；查询使用 `browser.cypher` 时先设置两个参数 |
-| Dashboard 提示没有发布数据 | 确认手动 ETL 已提交且运行状态为 `SUCCEEDED`，然后刷新页面 |
-| Relationships 提示没有 Graph 或数据已过期 | 运行 `09_build_graph.py` 后刷新，核对 Graph 业务日期与 Dashboard 选择日期 |
-| Dashboard 的 `8501` 地址无法打开 | Docker 启动后还需要单独运行第 13 步的 Streamlit 命令，并保持该终端运行 |
+| Docker reports that a port is already allocated | Run `docker ps`. An older BoA environment may still own ports 7474, 7687 or 8978. Stop only the conflicting BoA containers before starting `boa-tutorial`. |
+| Step 01 reports an unavailable service | Wait for startup, rerun 01, and inspect the relevant service with `docker compose logs postgres`, `docker compose logs neo4j` or `docker compose logs cloudbeaver`. |
+| `role "student" does not exist` or authentication fails | Confirm that CloudBeaver and the scripts are using the current tutorial PostgreSQL instance. Old volumes can retain old credentials. The guide and existing warehouse DDL use `student` / `student`. |
+| The navigation tree shows one database but SQL affects another | Run `SELECT current_database();` in the actual editor. Switch its connection, not only the tree selection. |
+| `public.customers` or `public.transactions` does not exist | Create the source tables in the correct source database using the complete `sources/*.sql` file before executing its seed file. |
+| `posted_date` or `event_date` does not exist | Check the current database and its actual transaction columns against section 3.3. An old or wrong source layout is not changed by `CREATE TABLE IF NOT EXISTS`. |
+| `current transaction is aborted` | Execute `ROLLBACK;` on its own, then address the first error. Repeating later statements cannot repair an aborted transaction. |
+| Manual ETL reports a missing batch/run setting | Keep the same `boa` session from `seed/registry.sql` through `000_manual.sql` and the final commit. Follow section 3.6 if the session was lost. |
+| Python step 05 or 06 reports the wrong stage or a missing active run | Complete the prerequisite steps. After fixing an ETL error, restart from 04, then run 05 and 06. |
+| `INCOMPLETE_TRANSACTION_PUBLICATION` | Inspect the first reported event and its dimension mappings. Confirm that all of `001_schema.sql` ran, including the transaction-type reference rows. Fix the cause and restart the ETL; do not bypass the publication check. |
+| Reporting views or Dashboard have no data | Confirm step 06 succeeded, or that the manual route completed `finish_run.sql` followed by `COMMIT`. Check the audit status. |
+| Neo4j is empty or shows an old export | Complete Gold publication, then run 09. Use the `boa` namespace for actual-data queries. |
+| Dashboard cannot be opened | Start Streamlit with the command in section 7 and keep its terminal running. Docker startup alone does not start the Dashboard application. |

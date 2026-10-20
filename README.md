@@ -72,7 +72,7 @@ Open [the dashboard](http://localhost:8501). Keep this terminal open; use anothe
 
 CloudBeaver's initial administrator account is separate from the PostgreSQL account. The three source databases are `boa_savings`, `boa_cards` and `boa_loans`. These credentials are for this local fictional tutorial dataset.
 
-For a step-by-step CloudBeaver demonstration, see the [Manual demo guide](docs/manual-demo.md) (Chinese).
+For step-by-step Python and CloudBeaver SQL instructions, validation, Graph and Dashboard demonstrations, see the [Manual demo guide](docs/manual-demo.md).
 
 For manual warehouse setup, use PostgreSQL username **`student`** and password **`student`** for all four database connections, matching the tutorial Docker configuration and the existing `001_schema.sql`. First create the source tables with the matching files in `workspace/sql/sources/`, then connect the SQL editor to `boa` and execute all of `workspace/sql/001_schema.sql`.
 
